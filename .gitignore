@@ -1,0 +1,6 @@
+data/
+runs/
+__pycache__/
+*.pyc
+# Ultralytics checkpoints auto-downloaded next to scripts
+yolo*.pt
