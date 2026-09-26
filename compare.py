@@ -12,11 +12,14 @@ to online materialize from ``by_class`` + ``splits/*.txt`` (legacy).
 
 Upstream rebuild switches (``__main__``)::
 
-    RERUN_SPLIT_BY_CLASS  # ② delete SPLIT_DIR → split_by_class
-    RERUN_DUMP_AUG        # ③ delete AUG_OUT_ROOT → dump_aug
-    RERUN_SPLIT_AUG       # ③b delete AUG_SPLIT_ROOT → split_aug
+    RERUN_EXTRACT_BY_CLASS  # ① delete BY_CLASS_ROOT → extract_{pet|cub}_by_class
+    RERUN_SPLIT_BY_CLASS    # ② delete SPLIT_DIR → split_by_class
+    RERUN_DUMP_AUG          # ③ delete AUG_OUT_ROOT → dump_aug
+    RERUN_SPLIT_AUG         # ③b delete AUG_SPLIT_ROOT → split_aug
 
-Enabling an earlier step auto-cascades later ones (②⇒③⇒③b, ③⇒③b).
+Enabling an earlier step auto-cascades later ones (①⇒②⇒③⇒③b, ②⇒③⇒③b, ③⇒③b).
+
+Dataset / Mac smoke vs Linux full: ``platform_config.DATASET`` + ``MAX_*``.
 
 Runs:
   - A0–A4 (``none`` / ``global`` / ``fg_only`` / ``bg_only`` / ``fgbg``)
@@ -33,6 +36,8 @@ import shutil
 from pathlib import Path
 
 from dump_aug import MODE_DIRS, run_dump
+from extract_cub_by_class import extract as extract_cub
+from extract_pet_by_class import extract as extract_pet
 from fgbg_aug import AugMode
 from platform_config import (
     AUG_COUNT,
@@ -42,9 +47,12 @@ from platform_config import (
     AUG_VAL_RATIO,
     AUG_VAL_USE_AUG,
     BY_CLASS_ROOT,
+    CUB_ROOT,
+    DATASET,
     INCLUDE_A0,
     MAX_CLASSES,
     MAX_PER_CLASS,
+    PET_ROOT,
     SPLIT_DIR,
 )
 from split_aug import split_aug_train_val
@@ -97,6 +105,7 @@ def _rmtree(path: Path) -> None:
 
 def prepare_upstream(
     *,
+    rerun_extract_by_class: bool,
     rerun_split_by_class: bool,
     rerun_dump_aug: bool,
     rerun_split_aug: bool,
@@ -104,35 +113,81 @@ def prepare_upstream(
     split_dir: Path = SPLIT_DIR,
     aug_out_root: Path = AUG_OUT_ROOT,
     aug_split_root: Path = AUG_SPLIT_ROOT,
+    dataset: str = DATASET,
     test_ratio: float = 0.1,
     val_ratio: float = 0.0,
     split_seed: int = 0,
     img_size: int = 224,
     other_image_prob: float = 0.4,
     dump_seed: int = 0,
+    max_classes: int = MAX_CLASSES,
+    max_per_class: int = MAX_PER_CLASS,
 ) -> dict:
-    """Optionally rebuild ② / ③ / ③b. Earlier steps cascade to later ones."""
-    do_2 = bool(rerun_split_by_class)
+    """Optionally rebuild ① / ② / ③ / ③b. Earlier steps cascade to later ones."""
+    do_1 = bool(rerun_extract_by_class)
+    do_2 = bool(rerun_split_by_class) or do_1
     do_3 = bool(rerun_dump_aug) or do_2
     do_3b = bool(rerun_split_aug) or do_3
 
     log = {
+        "dataset": dataset,
+        "max_classes": int(max_classes),
+        "max_per_class": int(max_per_class),
         "requested": {
+            "extract_by_class": bool(rerun_extract_by_class),
             "split_by_class": bool(rerun_split_by_class),
             "dump_aug": bool(rerun_dump_aug),
             "split_aug": bool(rerun_split_aug),
         },
-        "effective": {"split_by_class": do_2, "dump_aug": do_3, "split_aug": do_3b},
+        "effective": {
+            "extract_by_class": do_1,
+            "split_by_class": do_2,
+            "dump_aug": do_3,
+            "split_aug": do_3b,
+        },
         "steps": {},
     }
-    if not (do_2 or do_3 or do_3b):
+    if not (do_1 or do_2 or do_3 or do_3b):
         print("upstream: no rebuild (all RERUN_* = False)")
         return log
 
     print(
         "upstream rebuild plan: "
-        f"②split_by_class={do_2} ③dump_aug={do_3} ③b_split_aug={do_3b}"
+        f"dataset={dataset} max_classes={max_classes} max_per_class={max_per_class} | "
+        f"①extract={do_1} ②split_by_class={do_2} ③dump_aug={do_3} ③b_split_aug={do_3b}"
     )
+
+    if do_1:
+        print(f"\n=== ① extract_{dataset}_by_class: delete BY_CLASS_ROOT then rewrite ===")
+        _rmtree(by_class_root)
+        if dataset == "pet":
+            extract_info = extract_pet(
+                PET_ROOT,
+                by_class_root,
+                skip_existing=False,
+                max_classes=max_classes,
+                max_per_class=max_per_class,
+            )
+        elif dataset == "cub":
+            extract_info = extract_cub(
+                CUB_ROOT,
+                by_class_root,
+                skip_existing=False,
+                max_classes=max_classes,
+                max_per_class=max_per_class,
+            )
+        else:
+            raise SystemExit(f"unknown dataset={dataset!r}; expected 'pet' or 'cub'")
+        log["steps"]["extract_by_class"] = {
+            "out": str(by_class_root),
+            "n_saved": extract_info.get("n_saved"),
+            "n_classes": extract_info.get("n_classes"),
+            "n_images": extract_info.get("n_images"),
+        }
+        print(
+            f"  saved {extract_info.get('n_saved')}/{extract_info.get('n_images')} "
+            f"→ {extract_info.get('n_classes')} classes under {by_class_root}"
+        )
 
     if do_2:
         print("\n=== ② split_by_class: delete SPLIT_DIR then rewrite ===")
@@ -144,8 +199,8 @@ def prepare_upstream(
             val_ratio=val_ratio,
             seed=split_seed,
             force=True,
-            max_classes=MAX_CLASSES,
-            max_per_class=MAX_PER_CLASS,
+            max_classes=max_classes,
+            max_per_class=max_per_class,
         )
         log["steps"]["split_by_class"] = {
             "out": str(split_dir),
@@ -165,7 +220,7 @@ def prepare_upstream(
         if not (trainval_root / "image").is_dir():
             raise SystemExit(
                 f"missing {trainval_root / 'image'}; run ② split_by_class first "
-                f"(or set RERUN_SPLIT_BY_CLASS=True)"
+                f"(or set RERUN_SPLIT_BY_CLASS=True / RERUN_EXTRACT_BY_CLASS=True)"
             )
         _rmtree(aug_out_root)
         modes = list(MODE_DIRS)
@@ -390,16 +445,18 @@ def run_compare(
 
 
 if __name__ == "__main__":
-    # nohup /home/beyond/.conda/envs/yolo11/bin/python3 compare.py > compare.log 2>&1 &
-    # 路径：platform_config（AUG_SPLIT_ROOT + SPLIT_DIR/test）
+    # nohup /home/beyond/.conda/envs/yolo11/bin/python3 compare.py > cub.log 2>&1 &
+    # 路径 / 数据集 / Mac冒烟·Linux全量：platform_config.py（DATASET, MAX_*）
 
     # ========================= 上游重跑开关（先删产物目录，再执行）=========================
-    # ② split_by_class → SPLIT_DIR
-    # ③ dump_aug       → AUG_OUT_ROOT
-    # ③b split_aug     → AUG_SPLIT_ROOT
-    # 打开更早步骤会自动级联更晚步骤（②⇒③⇒③b；③⇒③b）
-    RERUN_SPLIT_BY_CLASS = False
-    RERUN_DUMP_AUG = False
+    # ① extract_by_class → BY_CLASS_ROOT（pet / cub 由 DATASET 决定）
+    # ② split_by_class   → SPLIT_DIR
+    # ③ dump_aug         → AUG_OUT_ROOT
+    # ③b split_aug       → AUG_SPLIT_ROOT
+    # 打开更早步骤会自动级联更晚步骤（①⇒②⇒③⇒③b；②⇒③⇒③b；③⇒③b）
+    RERUN_EXTRACT_BY_CLASS = True
+    RERUN_SPLIT_BY_CLASS = True
+    RERUN_DUMP_AUG = True
     RERUN_SPLIT_AUG = True
 
     # 与脚本 __main__ 对齐的上游参数
@@ -430,7 +487,13 @@ if __name__ == "__main__":
     PREFER_PREBUILT = True
     TEST_IMAGE_ROOT = SPLIT_DIR / "test" / "image"
 
+    print(
+        f"pipeline config: DATASET={DATASET} BY_CLASS_ROOT={BY_CLASS_ROOT} "
+        f"MAX_CLASSES={MAX_CLASSES} MAX_PER_CLASS={MAX_PER_CLASS}"
+    )
+
     upstream_log = prepare_upstream(
+        rerun_extract_by_class=RERUN_EXTRACT_BY_CLASS,
         rerun_split_by_class=RERUN_SPLIT_BY_CLASS,
         rerun_dump_aug=RERUN_DUMP_AUG,
         rerun_split_aug=RERUN_SPLIT_AUG,
@@ -438,12 +501,15 @@ if __name__ == "__main__":
         split_dir=SPLIT_DIR,
         aug_out_root=AUG_OUT_ROOT,
         aug_split_root=AUG_SPLIT_ROOT,
+        dataset=DATASET,
         test_ratio=UPSTREAM_TEST_RATIO,
         val_ratio=UPSTREAM_VAL_RATIO,
         split_seed=UPSTREAM_SPLIT_SEED,
         img_size=UPSTREAM_IMG_SIZE,
         other_image_prob=UPSTREAM_OTHER_IMAGE_PROB,
         dump_seed=UPSTREAM_SPLIT_SEED,
+        max_classes=MAX_CLASSES,
+        max_per_class=MAX_PER_CLASS,
     )
 
     run_compare(

@@ -116,7 +116,7 @@ Five columns remain A0–A4. **Only the A4 `fgbg` column** uses “FG×N pick on
 | `OUT_DIR` | mechanism-figure dir (`pet_aug_grid.png`) |
 | `FG_AUG_COUNT` | A4 FG slot count (default 4) |
 | `FG_AUG_PICK` | which slot to show (0-based; pick 1 is fine) |
-| `OTHER_IMAGE_PROB` | A4 BG from other `by_class/image` wrap-crop; else solid+noise+stripes |
+| `OTHER_IMAGE_PROB` | A4 BG from other `by_class/image` wrap-crop; else solid+spots/blocks/stripes (high contrast) |
 
 Note: **online A4 in train / compare** still uses `augment(..., mode="fgbg")`; **mechanism grid / `dump_aug.py` A4** uses `augment_fgbg_pick` (FG×N + random complex BG).
 

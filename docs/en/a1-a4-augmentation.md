@@ -143,7 +143,7 @@ For slot pick (0 … N-1):
   → FG: weak photometric + **per-slot angle** rotate (prefer larger ± angles; see _sample_angle_slot)
   → BG: make_random_complex_bg
         · with other_image_prob (default 0.65) wrap-crop another sample’s image
-        · else: solid + noise blobs + stripes (not same-sample bg)
+        · else: solid + high-contrast spots / blocks / wavy stripes (not same-sample bg; denser)
   → output = blend(complex BG, rotated FG, new mask)
 ```
 

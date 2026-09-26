@@ -16,20 +16,42 @@ under ``if __name__ == "__main__"`` then run.
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 from tqdm import tqdm
 
-from platform_config import BY_CLASS_ROOT, PET_ROOT
+from platform_config import BY_CLASS_ROOT, MAX_CLASSES, MAX_PER_CLASS, PET_ROOT
 
 SUBSETS = ("image", "fg", "bg", "bbox")
 
 
 def breed_from_stem(stem: str) -> str:
     return stem.rsplit("_", 1)[0]
+
+
+def cap_image_paths(
+    paths: list[Path],
+    *,
+    max_classes: int,
+    max_per_class: int,
+) -> list[Path]:
+    """Mac smoke / optional subset: first N breeds, then ≤K images per breed."""
+    buckets: dict[str, list[Path]] = defaultdict(list)
+    for p in paths:
+        buckets[breed_from_stem(p.stem)].append(p)
+    breeds = sorted(buckets)
+    if max_classes > 0:
+        breeds = breeds[: int(max_classes)]
+    out: list[Path] = []
+    for b in breeds:
+        items = sorted(buckets[b], key=lambda x: x.stem)
+        if max_per_class > 0:
+            items = items[: int(max_per_class)]
+        out.extend(items)
+    return out
 
 
 def body_bbox(trimap: np.ndarray, pad_ratio: float) -> tuple[int, int, int, int] | None:
@@ -86,6 +108,8 @@ def extract(
     *,
     pad_ratio: float = 0.05,
     skip_existing: bool = True,
+    max_classes: int = 0,
+    max_per_class: int = 0,
 ) -> dict:
     images_dir = pet_root / "images"
     trimap_dir = pet_root / "annotations" / "trimaps"
@@ -94,7 +118,10 @@ def extract(
     if not trimap_dir.is_dir():
         raise FileNotFoundError(f"missing trimaps: {trimap_dir}")
 
-    paths = list_images(images_dir)
+    paths_all = list_images(images_dir)
+    paths = cap_image_paths(
+        paths_all, max_classes=max_classes, max_per_class=max_per_class
+    )
     for name in SUBSETS:
         (out_dir / name).mkdir(parents=True, exist_ok=True)
 
@@ -148,9 +175,12 @@ def extract(
         counts[breed] += 1
 
     summary = {
+        "n_images_all": len(paths_all),
         "n_images": len(paths),
         "n_saved": int(sum(counts.values())),
         "n_classes": len(counts),
+        "max_classes": int(max_classes),
+        "max_per_class": int(max_per_class),
         "skipped_existing": skipped,
         "missing_trimap": missing_trimap,
         "no_fg_fallback_full": no_fg,
@@ -162,16 +192,23 @@ def extract(
 
 
 if __name__ == "__main__":
-    # 数据路径：platform_config.py
+    # 路径 / Mac冒烟·Linux全量：platform_config.py
     OUT_DIR = BY_CLASS_ROOT
-    result = extract(PET_ROOT, OUT_DIR)
+    result = extract(
+        PET_ROOT,
+        OUT_DIR,
+        max_classes=MAX_CLASSES,
+        max_per_class=MAX_PER_CLASS,
+    )
 
     print(
         f"saved {result['n_saved']}/{result['n_images']} images "
+        f"(of {result['n_images_all']} listed) "
         f"→ {result['n_classes']} classes under {result['out_dir']}"
     )
     print("layout:", result["layout"])
     print(
+        f"max_classes={result['max_classes']} max_per_class={result['max_per_class']} "
         f"skipped_existing={result['skipped_existing']} "
         f"missing_trimap={result['missing_trimap']} "
         f"no_fg={result['no_fg_fallback_full']}"

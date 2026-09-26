@@ -296,8 +296,65 @@ def _wrap_crop_rgb(src: np.ndarray, h: int, w: int, rng: np.random.Generator) ->
     return src[np.ix_(ys, xs)].copy()
 
 
+def _luma_u8(rgb: np.ndarray) -> float:
+    r, g, b = float(rgb[0]), float(rgb[1]), float(rgb[2])
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _hsv_to_rgb(h: float, s: float, v: float) -> tuple[int, int, int]:
+    """h∈[0,1), s,v∈[0,1] → RGB uint8."""
+    i = int(h * 6.0) % 6
+    f = h * 6.0 - int(h * 6.0)
+    p = v * (1.0 - s)
+    q = v * (1.0 - f * s)
+    t = v * (1.0 - (1.0 - f) * s)
+    if i == 0:
+        r, g, b = v, t, p
+    elif i == 1:
+        r, g, b = q, v, p
+    elif i == 2:
+        r, g, b = p, v, t
+    elif i == 3:
+        r, g, b = p, q, v
+    elif i == 4:
+        r, g, b = t, p, v
+    else:
+        r, g, b = v, p, q
+    return int(round(r * 255)), int(round(g * 255)), int(round(b * 255))
+
+
+def _contrast_rgb(
+    base: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    intensity: int,
+    multicolor: bool = True,
+) -> tuple[int, int, int]:
+    """Pick a mark color that stays visible on ``base`` (opposite luma + optional hue)."""
+    intensity = max(1, int(intensity))
+    want_dark = _luma_u8(base) >= 128.0
+    if float(rng.random()) < 0.12:
+        want_dark = not want_dark
+    if multicolor and float(rng.random()) < 0.75:
+        hh = float(rng.random())
+        s = float(rng.uniform(0.02, 0.12)) if float(rng.random()) < 0.22 else float(rng.uniform(0.22, 0.72))
+        if want_dark:
+            vv = float(rng.uniform(0.10, min(0.55, 0.18 + intensity / 120.0)))
+        else:
+            vv = float(rng.uniform(max(0.58, 0.72 - intensity / 200.0), 0.97))
+        return _hsv_to_rgb(hh, s, vv)
+    lo = max(1, intensity // 2)
+    if want_dark:
+        return tuple(
+            int(np.clip(int(c) - int(rng.integers(lo, intensity + 1)), 0, 255)) for c in base[:3]
+        )
+    return tuple(
+        int(np.clip(int(c) + int(rng.integers(lo, intensity + 1)), 0, 255)) for c in base[:3]
+    )
+
+
 def _complex_solid_bg(h: int, w: int, rng: np.random.Generator) -> np.ndarray:
-    """Solid canvas + noise spots + stripes (insect 04 solid branch, Pillow/numpy only)."""
+    """Solid canvas + dense spots / blocks / stripes (stronger than mild pad defaults)."""
     roll = float(rng.random())
     if roll < 0.5:
         v = int(rng.integers(210, 251))
@@ -310,37 +367,53 @@ def _complex_solid_bg(h: int, w: int, rng: np.random.Generator) -> np.ndarray:
     base = np.clip(v + rng.integers(-10, 11, size=3), 0, 255).astype(np.uint8)
     patch = np.empty((h, w, 3), dtype=np.uint8)
     patch[:, :] = base
-
-    n_spots = max(1, int(h * w * 0.04 / 40.0))
-    for _ in range(n_spots):
-        rad = int(rng.choice([1, 2, 3, 4, 5, 8], p=[0.35, 0.25, 0.2, 0.1, 0.05, 0.05]))
-        cy = int(rng.integers(0, h))
-        cx = int(rng.integers(0, w))
-        color = np.clip(base.astype(np.int16) + rng.integers(-22, 23, size=3), 0, 255).astype(np.uint8)
-        y0, y1 = max(0, cy - rad), min(h, cy + rad + 1)
-        x0, x1 = max(0, cx - rad), min(w, cx + rad + 1)
-        patch[y0:y1, x0:x1] = color
-
     pil = _to_pil(patch)
     draw = ImageDraw.Draw(pil)
-    n_stripes = max(1, int((w + h) * 0.025))
-    max_width = max(1, min(6, int(min(h, w) * 0.012) + 1))
+    min_side = min(h, w)
+
+    # Spots (dots): higher density + contrast colors (was density 0.04 / ± ±22)
+    spot_density = 0.10
+    n_spots = max(8, int(h * w * spot_density / 40.0))
+    for _ in range(n_spots):
+        rad = int(rng.choice([1, 2, 3, 4, 5, 7, 9], p=[0.22, 0.22, 0.2, 0.14, 0.1, 0.07, 0.05]))
+        cy = int(rng.integers(0, h))
+        cx = int(rng.integers(0, w))
+        color = _contrast_rgb(base, rng, intensity=42, multicolor=True)
+        draw.rectangle([cx - rad, cy - rad, cx + rad, cy + rad], fill=color)
+
+    # Blocks: larger rectangles / squares (was missing as a separate layer)
+    n_blocks = max(2, int(rng.integers(3, 8)))
+    for _ in range(n_blocks):
+        bw = int(rng.integers(max(6, min_side // 18), max(8, min_side // 5)))
+        bh = int(rng.integers(max(6, min_side // 18), max(8, min_side // 5)))
+        if float(rng.random()) < 0.35:
+            bh = bw
+        x0 = int(rng.integers(0, max(1, w - bw)))
+        y0 = int(rng.integers(0, max(1, h - bh)))
+        color = _contrast_rgb(base, rng, intensity=48, multicolor=True)
+        if float(rng.random()) < 0.55:
+            draw.rectangle([x0, y0, x0 + bw, y0 + bh], fill=color)
+        else:
+            draw.ellipse([x0, y0, x0 + bw, y0 + bh], fill=color)
+
+    # Stripes / wavy lines: denser, thicker, high-contrast multicolor
+    stripe_density = 0.055
+    n_stripes = max(4, int((w + h) * stripe_density))
+    max_width = max(2, min(10, int(min_side * 0.022) + 1))
     for _ in range(n_stripes):
-        color = tuple(
-            int(x) for x in np.clip(base.astype(np.int16) + rng.integers(-18, 19, size=3), 0, 255)
-        )
+        color = _contrast_rgb(base, rng, intensity=48, multicolor=True)
         width = int(rng.integers(1, max_width + 1))
-        amp = float(rng.uniform(0.0, 0.12)) * min(h, w) * float(rng.uniform(0.35, 1.0))
-        period = float(rng.uniform(max(8.0, min(h, w) * 0.12), max(8.0, min(h, w) * 0.55)))
+        amp = float(rng.uniform(0.0, 0.18)) * min_side * float(rng.uniform(0.35, 1.0))
+        period = float(rng.uniform(max(8.0, min_side * 0.10), max(8.0, min_side * 0.60)))
         phase = float(rng.uniform(0.0, 2.0 * np.pi))
         orient = float(rng.random())
         pts: list[tuple[int, int]] = []
-        if orient < 0.45:
+        if orient < 0.4:
             y_base = float(rng.uniform(0, max(1, h - 1)))
             for x in range(0, w, 3):
                 yi = int(np.clip(y_base + amp * np.sin(2.0 * np.pi * x / period + phase), 0, h - 1))
                 pts.append((x, yi))
-        elif orient < 0.9:
+        elif orient < 0.8:
             x_base = float(rng.uniform(0, max(1, w - 1)))
             for y in range(0, h, 3):
                 xi = int(np.clip(x_base + amp * np.sin(2.0 * np.pi * y / period + phase), 0, w - 1))
@@ -379,7 +452,7 @@ def make_random_complex_bg(
     exclude: Optional[tuple[str, str]] = None,
     other_image_prob: float = 0.65,
 ) -> np.ndarray:
-    """Random complex BG: other by_class image crop/tile, or solid+noise+stripes. Never uses ``exclude``."""
+    """Random complex BG: other by_class image crop/tile, or solid+spots/blocks/stripes. Never uses ``exclude``."""
     pool = [s for s in (samples or []) if exclude is None or s != exclude]
     if (
         root is not None

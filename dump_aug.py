@@ -199,7 +199,7 @@ if __name__ == "__main__":
     IMG_SIZE = 224  # 0 = keep crop size; >0 resize to square
     # True: skip files that already exist; never delete prior aug samples.
     SKIP_EXISTING = False
-    OTHER_IMAGE_PROB = 0.4  # A4 BG from other images; else solid+noise+stripes
+    OTHER_IMAGE_PROB = 0.4  # A4 BG from other images; else solid+spots/blocks/stripes
     # INCLUDE_A0 / AUG_COUNT：platform_config（原图 A0_none ×N，与 A1–A4 同倍数）
 
     modes: list[tuple[str, AugMode]] = list(MODE_DIRS)

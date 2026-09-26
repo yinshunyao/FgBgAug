@@ -116,7 +116,7 @@ if __name__ == "__main__":
     # A4 fgbg only: generate FG_AUG_COUNT slot augs, show FG_AUG_PICK (0-based).
     FG_AUG_COUNT = 4
     FG_AUG_PICK = 0
-    # Prob of sampling BG from another by_class image; else solid+noise+stripes.
+    # Prob of sampling BG from another by_class image; else solid+spots/blocks/stripes.
     OTHER_IMAGE_PROB = 0.65
 
     samples = list_by_class_samples(BY_CLASS_ROOT)
